@@ -6,6 +6,7 @@
 
 #include "ggml-impl.h"
 #include "ggml-quants.h"
+#define SPMM_CPU
 
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
@@ -14142,6 +14143,7 @@ static void ggml_compute_forward_mul_mat_sparse(
     }
 #endif
 
+#ifdef SPMM_CPU
     if (params->type == GGML_TASK_INIT) {
         return;
     }
@@ -14150,7 +14152,6 @@ static void ggml_compute_forward_mul_mat_sparse(
         return;
     }
 
-    // int64_t t0 = ggml_perf_time_ms();
     t0 = ggml_perf_time_ms();
 
     gemm_T_output_masked_fp16(src0->data, src1->data, dst->data,
@@ -14162,6 +14163,7 @@ static void ggml_compute_forward_mul_mat_sparse(
 
     return;
 
+#else
     if (params->type == GGML_TASK_INIT) {
         if (src1->type != vec_dot_type) {
             char * wdata = params->wdata;
@@ -14184,6 +14186,8 @@ static void ggml_compute_forward_mul_mat_sparse(
     if (params->type == GGML_TASK_FINALIZE) {
         return;
     }
+
+    t0 = ggml_perf_time_ms();
 
     const void * wdata    = (src1->type == vec_dot_type) ? src1->data : params->wdata;
     const size_t row_size = ne10*ggml_type_size(vec_dot_type)/ggml_blck_size(vec_dot_type);
@@ -14290,6 +14294,11 @@ static void ggml_compute_forward_mul_mat_sparse(
         }
         
     }
+
+    int64_t t1 = ggml_perf_time_ms();
+    printf("%lld\n", t1 - t0);
+#endif
+
     // printf("total %d\n", total);
 
     // int predictor_cpu = 0;
@@ -20742,23 +20751,23 @@ void gemm_T_output_masked_fp16(ggml_fp16_t *src0, float *src1, float *dst, int M
     float (*O_T)[M] = (float (*)[M]) dst; // float O_T[N][M]
     float (*output_masks_T)[M] = (float (*)[M]) src3; // float masks_T[N][M]
 
-    const int B_M = 128;
-    const int B_N = 128;
+    const int B_M = 64;
+    const int B_N = 64;
     const int B_K = 256;
 
     int io_bound = (M + B_M - 1) / B_M, jo_bound = (N + B_N - 1) / B_N, ko_bound = (K + B_K - 1) / B_K;
     
     // #pragma omp parallel for shared(X_T, W, O_T, output_masks_T) num_threads(64)
 
-    int n_active = 0;
-    for (int i = 0; i < M; i++) {
-        for (int j = 0; j < N; j++) {
-            if (output_masks_T == NULL || output_masks_T[j][i] > 0) {
-                n_active++;
-            }
-        }
-    }
-    printf("%f\n", (float) n_active / (M * N));
+    // int n_active = 0;
+    // for (int i = 0; i < M; i++) {
+    //     for (int j = 0; j < N; j++) {
+    //         if (output_masks_T == NULL || output_masks_T[j][i] > 0) {
+    //             n_active++;
+    //         }
+    //     }
+    // }
+    // printf("%f\n", (float) n_active / (M * N));
 
     n_threads = 32;
     #pragma omp parallel num_threads(n_threads)
