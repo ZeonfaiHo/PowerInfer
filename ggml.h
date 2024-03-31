@@ -2212,6 +2212,8 @@ extern "C" {
     GGML_API int ggml_cpu_has_ssse3      (void);
     GGML_API int ggml_cpu_has_vsx        (void);
 
+    void gemm_T_output_masked_fp16(ggml_fp16_t *src0, float *src1, float *dst, int M, int N, int K, float *src3, int thread_id, int n_threads);
+
     //
     // global variables
     // 

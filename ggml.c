@@ -1,6 +1,9 @@
 #define _CRT_SECURE_NO_DEPRECATE // Disables ridiculous "unsafe" warnigns on Windows
 #define _USE_MATH_DEFINES // For M_PI on MSVC
 
+#include <immintrin.h>
+#include <omp.h>
+
 #include "ggml-impl.h"
 #include "ggml-quants.h"
 
@@ -130,7 +133,7 @@ void ggml_print_backtrace(void) {
 }
 #endif
 
-// #define GGML_PERF
+#define GGML_PERF
 #define GGML_DEBUG 0
 #define GGML_GELU_FP16
 #define GGML_GELU_QUICK_FP16
@@ -14140,6 +14143,26 @@ static void ggml_compute_forward_mul_mat_sparse(
 #endif
 
     if (params->type == GGML_TASK_INIT) {
+        return;
+    }
+
+    if (ith != 0) {
+        return;
+    }
+
+    // int64_t t0 = ggml_perf_time_ms();
+    t0 = ggml_perf_time_ms();
+
+    gemm_T_output_masked_fp16(src0->data, src1->data, dst->data,
+                             ne0, ne3 * ne2 * ne1, ne00,
+                             dst->src[2]->data, ith, nth);
+
+    int64_t t1 = ggml_perf_time_ms();
+    printf("%lld\n", t1 - t0);
+
+    return;
+
+    if (params->type == GGML_TASK_INIT) {
         if (src1->type != vec_dot_type) {
             char * wdata = params->wdata;
             const size_t row_size = ne10*ggml_type_size(vec_dot_type)/ggml_blck_size(vec_dot_type);
@@ -20709,6 +20732,81 @@ void ggml_set_backend(struct ggml_tensor * tensor, enum ggml_backend_type backen
         #endif
     }
     GGML_ASSERT(false && "invalid backend");
+}
+
+void gemm_T_output_masked_fp16(ggml_fp16_t *src0, float *src1, float *dst, int M, int N, int K, float *src3, int thread_id, int n_threads) {
+    memset(dst, 0, M * N * sizeof (float));
+
+    ggml_fp16_t (*W)[K] = (ggml_fp16_t (*)[K]) src0; // float W[M][K]
+    float (*X_T)[K] = (float (*)[K]) src1; // float X_T[N][K]
+    float (*O_T)[M] = (float (*)[M]) dst; // float O_T[N][M]
+    float (*output_masks_T)[M] = (float (*)[M]) src3; // float masks_T[N][M]
+
+    const int B_M = 128;
+    const int B_N = 128;
+    const int B_K = 256;
+
+    int io_bound = (M + B_M - 1) / B_M, jo_bound = (N + B_N - 1) / B_N, ko_bound = (K + B_K - 1) / B_K;
+    
+    // #pragma omp parallel for shared(X_T, W, O_T, output_masks_T) num_threads(64)
+
+    int n_active = 0;
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < N; j++) {
+            if (output_masks_T == NULL || output_masks_T[j][i] > 0) {
+                n_active++;
+            }
+        }
+    }
+    printf("%f\n", (float) n_active / (M * N));
+
+    n_threads = 32;
+    #pragma omp parallel num_threads(n_threads)
+    {
+        int thread_id = omp_get_thread_num();
+
+        for (int io = thread_id; io < io_bound; io += n_threads) {
+            for (int jo = 0; jo < jo_bound; jo++) {
+                for (int ko = 0; ko < ko_bound; ko++) {
+
+                    int ii_bound = (io + 1) * B_M > M ? M - io * B_M : B_M;
+                    int ki_bound = (ko + 1) * B_K > K ? K - ko * B_K : B_K;
+                    int ji_bound = (jo + 1) * B_N > N ? N - jo * B_N : B_N;
+
+                    for (int ii = 0; ii < ii_bound; ii++) {
+                        for (int ji = 0; ji < ji_bound; ji++) {
+                            int i = io * B_M + ii, j = jo * B_N + ji;
+                            if (output_masks_T == NULL || output_masks_T[j][i] > 0) {
+                                __m256 temp = _mm256_setzero_ps();
+
+                                int ki = 0;
+
+                                for (; ki + 8 <= ki_bound; ki += 8) {
+                                    int k = ko * B_K + ki;
+                                    __m128i w_half = _mm_loadu_si128((__m128i*)&W[i][k]);
+                                    __m256 w = _mm256_cvtph_ps(w_half);
+                                    __m256 x = _mm256_loadu_ps(&X_T[j][k]);
+                                    temp = _mm256_fmadd_ps(w, x, temp);
+                                }
+
+                                float temp_array[8];
+                                _mm256_storeu_ps(temp_array, temp);
+                                for (int l = 0; l < 8; l++) {
+                                    O_T[j][i] += temp_array[l];
+                                }
+
+                                for (; ki < ki_bound; ki++) {
+                                    int k = ko * B_K + ki;
+                                    float w = _cvtsh_ss(W[i][k]);
+                                    O_T[j][i] += w * X_T[j][k];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

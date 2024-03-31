@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.13)  # for add_link_options
 project("llama.cpp" C CXX)
 
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fopenmp")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp")
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if (NOT XCODE AND NOT MSVC AND NOT CMAKE_BUILD_TYPE)
@@ -640,7 +643,16 @@ if (GGML_USE_CPU_HBM)
     find_library(memkind memkind REQUIRED)
 endif()
 
-add_library(ggml OBJECT
+# find_package(OpenMP)
+# if(OpenMP_CXX_FOUND)
+#     link_libraries(OpenMP::OpenMP_CXX)
+# endif()
+
+# message(${OpenMP_CXX_FOUND})
+
+
+# add_library(ggml OBJECT
+add_library(ggml
             ggml.c
             ggml.h
             ggml-alloc.c
@@ -658,6 +670,11 @@ add_library(ggml OBJECT
 
 target_include_directories(ggml PUBLIC . ${LLAMA_EXTRA_INCLUDES})
 target_compile_features(ggml PUBLIC c_std_11) # don't bump
+
+# if(OpenMP_CXX_FOUND)
+#     target_link_libraries(ggml PUBLIC OpenMP::OpenMP_CXX)
+# endif()
+
 target_link_libraries(ggml PUBLIC Threads::Threads ${LLAMA_EXTRA_LIBS})
 if (GGML_USE_CPU_HBM)
     target_link_libraries(ggml PUBLIC memkind)
